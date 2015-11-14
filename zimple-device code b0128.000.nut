@@ -1,104 +1,37 @@
-/** Motor control via simple Proportional feedback loop.
-* Setpoint via manual POT input. Error read from second POT attached to motor shaft.
-* Multiple timer loops run concurrently:
-*   -feedbackLoop() handles PID calcs (100 hz)
-*   -dashboardOut() handles output logging stream (20 hz)
-*   -heartbeat() 1 hz server.log in leui of LED flasher
-*   -imp's Sampler() configured for all ADC potentiometer capture (100 hz).
-* 
-* Revisions History
-*   Forked from Build 200 with these changes:
-*   000 -as is (19200 baud, PROC_FREQ 100, DASH_FREQ=20): OK
-*   004 -comment out unused serialData echo function and move serial pin conf to top, add BUILD# into heartbeat
-*       Tests:  OK. Runs "forever" while being viewed in DAQfactory.
-*   005 -add: xsimctrl output only (NO serial input code) as a test. 2 Hz send only.
-*       OK
-*   006 -increase XCTRL_FREQ to 20 hz: OK
-*   009 -motor state array cleaned up
-*       -remove all references to positional pot, as transition to serial streaming
-*       -setpoint mapped to getpoint just to see the echo to xsimctrl
-*       OK
-*   014 -add getMotion() to receive setpoints from xsimCTRL app @1 hz, sends to xsimCTRL still @ 20 hz.
-*       OK
-*   015 -increase xsimCTRL receive to 20 hz
-*       CRASH/REBOOT at getMotion line 255 "index '7' does not exist"
-*   020 -fixed motionFrameSeek sizing error. Should use #axis in received data stream, not numMotors
-*       OK
-*   024 -increase PROC_FREQ from 1 hz to 100 hz
-*       OK, but only getting 30 motion frames detected/sec when 100/sec sent (xsimCTRL @ 10 ms)
-*   025 increasing PROC_FREQ to 300 hz: no effect
-*       decrease xsimCTRL to 5 ms: no effect (receives max out at ~30/sec)
-*   026 -led toggle added to debug (dir pin used). Logic analyzer confirms following:
-*       getMotion freq: 50 hz actual (300 hz setting). PROC_FREQ@100: still 50 hz actual. Disable feedback loop: no diff.
-*   030 disable xsimCTRL output too:  immediate CRASH/freeze
-*   031 all loops disabled, except getMotion (xsimCTRL not running)
-*       OK.  Still only 50 hz when getMotion freq @ 100 hz.
-*   033 ADC Sampler disabled
-*       52 hz (+2 hz improvement only.
-*   037 try calling getMotion() from the existing Sampler callback instead.
-*       OK.  getMotion() now runs at full PROC_FREQ as intended,
-*            but still never get more than 30 frames/sec from xsimCTRL.
-*   038 all loops re-enabled at full regular speeds. xsimCTRL output re-enabled (both send and receive)
-*       OK, but still have the 30 hz frame detection limit.
-*       Enabling receive inside xsimCTRL freezes firmware!
-*   040 revert back to calling getMotion as a imp.wakeup
-*       OK
-*   041 try calling getMotion() from the existing Sampler callback again.
-*       OK at PROC_FREQ/XCTRL_FREQ = 100/20 hz and XsimCtrl sending at 50 ms.
-*   042 try increasing xsimCtrl send to 10 ms:
-*       OK
-*   043 increase baud to 57600
-*       Locks up when until click Receive in xsimCTRL (ok if just sending)
-*   044 try same at 38400 bauds
-*       same lockup result.
-*   045 19200 baud again.
-*       receive still crashes firware!
-*   047 revert everything back to "normal"
-*       worked once. Next time, back to crashing again.
-*       try rebooting PC.
-*       OK (wtf...). Try again. locks up. Then, never works again.
-*   054 found that wiring affects things. re-wired so 3v3 no longer tied to Sparkfun USB UART BoB.
-*       Also using just its 5-pin header instead of the side headers (not sure if relevant).
-*       Found that the logic analyser UART analysis of this is WAY WAY cleaner, with basically no bad packets anymore.
-*       OK:  at 1 hz proc_freq. need try faster...
-*   057 proc_freq 100 Hz:
-*       Almost good. sometimes when turning receive off in xsimctrl, firmware freezes.
-*   058 BUG found in getMotion: do loops inifinitely every bad frame. added 2nd motionBuf.seek into bad frame else
-*       still locks when xsim set to receive. set xsimctrl=false. still locks.
-*   062 change uart config flag to NO_RX
-*       Behaves as expected. nuthin happens
-*   065 BUG found in getMotion. 058 fix was not enough. Any legit attempts to seek the motionBuf blob pointer
-*       past start (which happens every invalid stream) fails to move blob's pointer at all. Added check and seek(0).
-*       OK!
-*   069 try calling getMotion() from the existing Sampler callback again.
-*       OK. Can even increase xctrl_freq to 100 hz no problem.
-*   070 poking around 070+...
-*   096 getMotion() function v1.1 (completely rewritten)
-*       ADC buf overrun once (but I had LOTS of debug logging enbled)
-*   097 all debug logging off, increase PROC_FREQ to 10.
-*       OK
-*   107 increased PROC_FREQ to 100.
-*       re-enabled feedback and xsimCTRL output loops
-*       ok.
-*   108 performances tests (build 107-xxx)
-*       PROC_FREQ and XCTRL_FREQ both at imp.wakeup(0.01) and high 65 hz source stream rates (max)
-*       ADC Sampler() + getMotion() togeter takes xx ms.
-*       getMotion() alone takes only 0.6 ms average (0.34 to 0.9)
-*       feedback() loop measures at 20 ms (50 Hz). This is due to imp.wakeup limitation.
-*   110 feedback() call also moved inside SamplesReady().
-*       OK. 
-*       feedback() duration = 0.4 ms (consistent)
-*       Sampler() total duration now = 1.9 ms (Sampler @ 100 Hz, 10 ms period).
-*       So, could handle ~500 Mhz?
-*       400 Hz test:  OK
-*   117 BUG:  feedbackLoop():  can't hanle >1 motors. Added hardware.pins (PWM and dir) as elements of motor[] state.
-*   128 BUG.117 fixed.
+/** Motor controller for X-SIM Motion Simulator Software.
+ * Designed to run on electric imp001 microcontroller.
+ * 
+ * Pre-release dev version.
+ * 
+ * Revision History
+ * Build
+ * 000  Cloned from _zimple_branch_1 build 128.
+ *      Working single axis PWM + dir model. P-only. Not yet web-enabled, no interface.
+ * 035  Agent commands added:
+ *        motorsEnable. Command to either enable or disable all motor outputs
+ *        /pid/Kp, Ki, Kd: set PID parameters (only Kp functional for now)
+ *      pid initialization function added
+ * 039+ added ping-pong agent-imp watchdog
+ * 099  App-->Agent control added:
+ *      Auto-loads factory controller settings from agent-side 'firmware' into imp Cloud upon first-ever bootup.
+ *      Agent mediates and validates between mobile app and controller for any request to change controller settings.
+ *      All preferences held within Agent. Any valid change synches to both controller and imp Cloud automatically.
+ *      Controller loads its configuration from imp Cloud every power-up (i.e. auto disaster-recovery)
+ *      HTTP handlers added: burn, revert, factory, WIPE
+ *        burn:     takes snapshot of current controller settings. Saves to imp Cloud.
+ *        revert:   reverts back to last known good controller settings.
+ *        factory:  restores all controller settings to factory defaults
+ *        WIPE:     (internal testing only)
+ * 126  Agent: changed Kp,Ki,Kd parsing from url-based to key/value pairs in an http content/text body
+ *      Good working base.
+ *
 */
 
-const BUILD = "128";
+const BUILD = "126";
 pwmFreq <- 5000; // PWM pulse frequency, Hz
-// proportional feedback gain (1/32768 gives 100% duty cycle when error is half the ADC range):
-Kp <- 1.0/32768.0; 
+Kp <- 0.0; // defaults prior to Cloud reload
+Ki <- 0.0;
+Kd <- 0.0;
 
 const PROC_FREQ = 200; // main machine update Hz (POTs polled, setpoint grabbed, PID calc'ed, motor outputs updated)
 const DASH_FREQ = 20; // dashboard serial output update freq, Hz
@@ -110,6 +43,8 @@ const FIFOSIZE = 80; // size of imp's UART FIFO, bytes
 numMotors <- 2; // #of motors of physical machine
 DELIM_LEN <- DELIM.len();
 frameSize <- DELIM_LEN + numMotors;
+
+motorsOn <- 0; // enable or disable all motor output
 
 count_motionFrames <- 0; // increment upon serial port motion frame detected
 count_motionBufOverruns <- 0; // increments upon valid serial port motion frame detected                      
@@ -132,24 +67,26 @@ for (local i = 0 ; i < numMotors ; i++)
 }
 // the above 2D array accessed as: motor[motorNumber][attribute_index]
 
+/**----------------- initialize motor parameters -------------------
+ */
+
+
 // alias pin9 as motor1_output for PWM output at 5000 Hz pulse frequency
 motor1_output <- hardware.pin9;
 motor1_output.configure( PWM_OUT, 1.0/pwmFreq, 0.0 );
-//motor[0][7] <- hardware.pin9;
-//motor[0][7].configure( PWM_OUT, 1.0/pwmFreq, 0.0 );
 
 // alias pin8 as digital output for motor1_direction
-// motor[0][8] <- hardware.pin8;
-// motor[0][8].configure( DIGITAL_OUT );
 motor1_direction <- hardware.pin8;
 motor1_direction.configure( DIGITAL_OUT );
-// led <- hardware.pin8;
-// led.configure( DIGITAL_OUT );
-// ledState <- 0;
 
 // alias pin2 analog input as motor1 POT position
 motor1_pot <- hardware.pin2;
 motor1_pot.configure(ANALOG_IN);
+
+// alias pin1 as digital output for led
+led <- hardware.pin1;
+led.configure( DIGITAL_OUT );
+ledState <- 0;
 
 // alias pin5, pin7 as UART57
 serial <- hardware.uart57;
@@ -202,8 +139,8 @@ function samplesReady(buffer, length)
 
 // 	ledState = 1-ledState; //debug
 //   led.write (ledState); //debug
-	
-	getMotion(); // get setpoint
+  
+  getMotion(); // get setpoint
 	feedbackLoop();
 
 // 	ledState = 1-ledState; //debug
@@ -249,7 +186,7 @@ buffer2 <- blob( 2 * OVERSAMPLING * numMotors);
 buffer3 <- blob( 2 * OVERSAMPLING * numMotors);
 // buffer4 <- blob( 2 * OVERSAMPLING * numMotors);
 // buffer5 <- blob( 2 * OVERSAMPLING * numMotors);
-// buffer6 <- blob( 2 * OVERSAMPLING * numMotors);le
+// buffer6 <- blob( 2 * OVERSAMPLING * numMotors);
 // buffer7 <- blob( 2 * OVERSAMPLING * numMotors);
 // buffer8 <- blob( 2 * OVERSAMPLING * numMotors);
 
@@ -287,16 +224,17 @@ function feedbackLoop()
 	
 		if ( m ==0  ) //debug:  only motor0 for now
 		{
-		  //motor1_direction.write( dir );
-		  //motor1_output.write( dutyCycle );
-			motor [m][8].write(dir);
-			motor [m][7].write( dutyCycle );
+  		motor [m][8].write(dir);
+  		if (motorsOn == 1)
+  		  motor [m][7].write( dutyCycle );
+  		else
+  		  motor [m][7].write( 0 );
 		
-			// update machine state array with above calcs
-			// each motor has [ setpoint, position, error, dutyCycle, direction, position_min, position_max]
-			motor [m][2] = error;
-			motor [m][3] = dutyCycle;
-			motor [m][4] = dir;
+  		// update machine state array with above calcs
+  		// each motor has [ setpoint, position, error, dutyCycle, direction, position_min, position_max]
+  		motor [m][2] = error;
+  		motor [m][3] = dutyCycle;
+  		motor [m][4] = dir;
 		}
 	
  }
@@ -308,19 +246,19 @@ function getMotion()
 	local i, s, leftovers;
 
  if ( motionBuf.eos == 1)
-	{
-		// buffer overRun
-		++count_motionBufOverruns;
-	}
+  {
+    // buffer overRun
+    ++count_motionBufOverruns;
+  }
 	else
-		motionBuf.writeblob( serial.readblob( FIFOSIZE) ); // use this, in reality
+    motionBuf.writeblob( serial.readblob( FIFOSIZE) ); // use this, in reality
 
 	local bufLen = motionBuf.tell();
 	  
 /*  motionBuf.seek(0); //debug
-	server.log("motionBuf.len["+motionBuf.len()+"]"); //debug
-	server.log( format("%s",motionBuf.tostring())); //debug
-	server.log( format("starting motionBuf length[%d]",bufLen)); //debug
+  server.log("motionBuf.len["+motionBuf.len()+"]"); //debug
+  server.log( format("%s",motionBuf.tostring())); //debug
+ 	server.log( format("starting motionBuf length[%d]",bufLen)); //debug
 */		
 
 	if ( bufLen >= frameSize ) // if enough data has arrived, search for valid frames
@@ -336,7 +274,7 @@ function getMotion()
 			
 			if ( s == DELIM )
 			{
-				++count_motionFrames;
+        ++count_motionFrames;
 			 // server.log("header found"); //debug
 				for ( i = 0; i< numMotors; ++i )	
 				{ // get all data
@@ -380,12 +318,40 @@ function getMotion()
 // function to send heartBeat to server
 function heartbeat()
 {
-	server.log( "BUILD["+BUILD+"] Motion Frames[" + count_motionFrames +
-	                           "] overruns[" + count_motionBufOverruns + 
-	                           "] errors[" + count_motionStreamErrors +"]" );
-		 // register function to fire once every 1 sec
-	imp.wakeup( 1.0 , heartbeat );
+	server.log( "BUILD["+BUILD+"] Motion Frames/Overruns/Errors[" + count_motionFrames +
+	                           "/" + count_motionBufOverruns + 
+	                           "/" + count_motionStreamErrors +"] " +
+	                           "Kp[" + print_k(Kp) + "] " +
+	                           "Ki[" + print_k(Ki) + "] " + 
+	                           "Kd[" + print_k(Kd) + "] " + 
+	                           "motors[" + motorsOn + "]" );
+  // register function to fire once every 3 secs
+	imp.wakeup( 3.0 , heartbeat );
 }
+
+// function for continuous ping-pong watchdog between device and agent
+function ping()
+{
+  // Send a 'ping' message to the server with the current millis counter
+  agent.send("ping", hardware.millis());
+}
+
+// function to act on pong delay from server, if any 
+function return_from_imp(startMillis)
+{
+  // Get the current time
+  local endMillis = hardware.millis();
+  // Calculate how long the round trip took
+  local diff = endMillis - startMillis;
+  // Log it
+  server.log("Round trip took: " + diff + "ms");
+  // Wake up in 5 seconds and ping again
+  imp.wakeup(5.0, ping);
+}
+ 
+// function to listen for 'pong' message from the agent, call return_from_imp()
+agent.on("pong", return_from_imp);
+ 
 
 // function to send dashboard data out serial port for monitoring and logging
 function dashboardOut()
@@ -434,24 +400,61 @@ function xsimctrlOut ()
 		imp.wakeup( 1.0/XCTRL_FREQ, xsimctrlOut );
 }
 
-// (UNUSED) function to echo received serial data to server log
-/*function serialData() {
-	
-	// Read the UART for data sent by PC
-	local b = serial.read();
-	while(b != -1) {
-		// As long as UART read value is not -1, we're getting data
-		local str = format("SERIAL ECHO: %c", b);
-		server.log( str );
-		b = serial.read();
-	}
-	
+//-------------- function to scale k for display
+function print_k( k )
+{
+  return (k * 10 * 65535).tointeger(); // this is not the "true" k (scaled to be more legible as a printout)
+}
+
+//------------ function to restore controller preferences provided by agent
+function setPrefs(prefsTable)
+{
+  Kp = prefsTable.Kp;
+  Ki = prefsTable.Ki;
+  Kd = prefsTable.Kd;
+  server.log("Controller preferences set.");
+}
+
+/*//-------------- function to save controller preferences to imp Cloud
+function savePrefs()
+{
+  // Cloud table for persistent storage
+  local controllerPrefs <- {};
+  controllerPrefs.Kp <- Kp;
+  controllerPrefs.Ki <- Ki;
+  controllerPrefs.Kd <- Kd;
+  return controllerPrefs;
 }
 */
+//------------ function to either enable or disable all motor output
+function setMotors(motorState)
+{
+  motorsOn = motorState;
+  ledState = motorState;
+  server.log( "Command executed: motorsEnable[" + motorState + "]");
+}
 
-// start the loops
+/*-------------------------------- Agent handlers ------------------------------
+*/
+
+agent.on("controller.set.prefs", setPrefs); // Register handler for incoming preferences data
+// REPLACED agent.on("controller.save.prefs", savePrefs); // Register handler for outgoing preferences data
+agent.on("motorsEnable", setMotors); // register handler for "motorsEnable" messages from the agent
+agent.on("setKp", function(x) { server.log("Received Kp["+x+"]"); Kp = x }); // set Kp global
+agent.on("setKi", function(x) { server.log("Received Ki["+x+"]"); Ki = x }); // set Ki global
+agent.on("setKd", function(x) { server.log("Received Kd["+x+"]"); Kd = x }); // set Kd global
+
+
+/**---------------------- start the loops ---------------------------------
+ * 
+ */
+
+server.log("Requesting controller preferences from agent...")
+agent.send("controller.get.prefs", 1); // Issue a request for device preferences
 heartbeat();
+ping(); // start the ping-pong watchdog
 hardware.sampler.start();
-// called inside Sampler instead feedbackLoop();
 if (dashboardOn) dashboardOut();
 if (xsimctrlOn) xsimctrlOut();
+
+

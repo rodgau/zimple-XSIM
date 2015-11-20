@@ -1,6 +1,5 @@
-## Welcome to zimple-XSIM ##
 
-![](http://i.imgur.com/gQ8wDbe.png)
+![](http://i.imgur.com/Bf7Ey7L.png)
 # Overview #
 
 *zimple-XSIM* is an [Electric Imp](http://electricimp.com) motor controller interface for the [X-Sim](http://www.x-sim.de) motion simulator software.
